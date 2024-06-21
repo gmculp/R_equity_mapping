@@ -41,7 +41,7 @@ FIPS_dt <- data.table(state=rep("06",9),county=c("001","055","085","013","075","
 
 ###automatically download all necessary files from USCB TIGER website###
 ###you will only have to do this once for each decennial census year###
-###for 2010... default###
+###for 2010###
 download_USCB_TIGER_files(FIPS.dt,USCB_TIGER.path,"2010") 
 ###for 2020###
 download_USCB_TIGER_files(FIPS.dt,USCB_TIGER.path,"2020")
