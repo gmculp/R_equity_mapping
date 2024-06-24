@@ -113,8 +113,7 @@ sort_edges <- function(pairz, in.dt, f.node, t.node, in_clus=2){
 
 
 generate_USCB_topojson_file <- function(FIPS_dt, USCB_TIGER.path, geo.year="2020", geo.type="tract", omit.unpopulated=TRUE, omit.artifacts=TRUE, output.file_name, in_clus=2) {
-
-	if(as.character(geo.year)=="2010") {
+if(as.character(geo.year)=="2010") {
 		f_year <- "2019"
 	} else {
 		f_year <- "2022"
@@ -226,6 +225,7 @@ generate_USCB_topojson_file <- function(FIPS_dt, USCB_TIGER.path, geo.year="2020
 
 	edges.sf <- edges.sf[edges.sf$rem.flag==0,]
 	edges.sf$rem.flag <- NULL
+	
 
 	###############################################
 	###remove unpopulated contiguous land masses###
@@ -270,19 +270,23 @@ generate_USCB_topojson_file <- function(FIPS_dt, USCB_TIGER.path, geo.year="2020
 		data.table(USCB_block=as.character(names(V(dg[[i]]))),group=i)
 	}))	
 
+	###get blocks that are not part of groups###
 	dd <- unique(c(temp.dt$USCB_block1,temp.dt$USCB_block2))
 	dd <- dd[!is.na(dd)]
 	dd <- dd[!dd %in% dg.dt$USCB_block]
+	
+	if (length(dd) > 0){
+		dg.dt2 <- data.table(USCB_block=dd,group=((1:length(dd))+max(dg.dt$group)))
+		dg.dt <- rbindlist(list(dg.dt,dg.dt2),use.names=TRUE,fill=TRUE)
+		rm(dg.dt2)
+	}
 
-	dg.dt2 <- data.table(USCB_block=dd,group=((1:length(dd))+max(dg.dt$group)))
-
-
-	unpop_contig.dt <- merge(rbindlist(list(dg.dt,dg.dt2),use.names=TRUE,fill=TRUE),api.data_cb[,c("USCB_block","USCB_pop"),with=FALSE],by="USCB_block",all.x=TRUE)
+	unpop_contig.dt <- merge(dg.dt, api.data_cb[,c("USCB_block","USCB_pop"),with=FALSE], by="USCB_block", all.x=TRUE)
 
 	unpop_contig.dt[,tot.pop:=sum(USCB_pop), by = group]
 
 	unpop_contig.dt <- unpop_contig.dt[tot.pop==0]
-	rm(dg,dg.dt,dg.dt2,net,dd,temp.dt,api.data_cb)
+	rm(dg,dg.dt,net,dd,temp.dt,api.data_cb)
 
 
 	###################################################################
@@ -338,19 +342,39 @@ generate_USCB_topojson_file <- function(FIPS_dt, USCB_TIGER.path, geo.year="2020
 	}
 	
 
-	###remove interior edges###
-	geom_edges.dt[,rem.flag := ifelse(GEOID.R == GEOID.L & LWTYPER == LWTYPEL & !is.na(GEOID.R) & !is.na(GEOID.L) & !is.na(LWTYPER) & !is.na(LWTYPEL), 1, 0)]
+	geom_edges.dt[,rem.flag := 0]
 	
 	###remove unpopulated contiguous areas###
 	if(omit.unpopulated){
-		geom_edges.dt[,rem.flag := ifelse(!is.na(USCB_blockL) & USCB_blockL %in% unpop_contig.dt$USCB_block,1,rem.flag)]
-		geom_edges.dt[,rem.flag := ifelse(!is.na(USCB_blockR) & USCB_blockR %in% unpop_contig.dt$USCB_block,1,rem.flag)]
+		geom_edges.dt[,rem.flag := ifelse(!is.na(USCB_blockL) & USCB_blockL %in% unpop_contig.dt$USCB_block,2,rem.flag)]
+		geom_edges.dt[,rem.flag := ifelse(!is.na(USCB_blockR) & USCB_blockR %in% unpop_contig.dt$USCB_block,2,rem.flag)]
 	}
 
-	###remove artifacts###
+	
 	if(omit.artifacts){
-		geom_edges.dt[,rem.flag := ifelse(!is.na(USCB_blockR) & USCB_blockR %in% art.dt$USCB_block & !is.na(LWTYPEL) & LWTYPEL=='W',1,rem.flag)]
-		geom_edges.dt[,rem.flag := ifelse(!is.na(USCB_blockL) & USCB_blockL %in% art.dt$USCB_block & !is.na(LWTYPER) & LWTYPER=='W',1,rem.flag)]
+		
+		###remove artifacts###
+		geom_edges.dt[,rem.flag := ifelse(!is.na(USCB_blockR) & USCB_blockR %in% art.dt$USCB_block & !is.na(LWTYPEL) & LWTYPEL=='W',3,rem.flag)]
+		geom_edges.dt[,rem.flag := ifelse(!is.na(USCB_blockL) & USCB_blockL %in% art.dt$USCB_block & !is.na(LWTYPER) & LWTYPER=='W',3,rem.flag)]
+		
+		###flag new edges once artifacts are removed###
+		geom_edges.dt[,new.edge := ifelse(!is.na(USCB_blockR) & USCB_blockR %in% art.dt$USCB_block & !is.na(LWTYPEL) & LWTYPEL=='L', 'R', 'N')]
+		geom_edges.dt[,new.edge := ifelse(!is.na(USCB_blockL) & USCB_blockL %in% art.dt$USCB_block & !is.na(LWTYPER) & LWTYPER=='L', 'L',new.edge)]
+		
+		###reset artifact edges###
+		geom_edges.dt[,GEOID.R := ifelse(new.edge == 'R', NA, GEOID.R)]
+		geom_edges.dt[,GEOID.L := ifelse(new.edge == 'L', NA, GEOID.L)]
+		
+		###remove interior edges but not adjacent to artifacts###
+		geom_edges.dt[,rem.flag := ifelse(GEOID.R == GEOID.L & LWTYPER == LWTYPEL & !is.na(GEOID.R) & !is.na(GEOID.L) & !is.na(LWTYPER) & !is.na(LWTYPEL) & (new.edge=='N'), 1, rem.flag)]
+		
+		geom_edges.dt[,new.edge := NULL]
+	
+	} else{
+		
+		###remove all interior edges###
+		geom_edges.dt[,rem.flag := ifelse(GEOID.R == GEOID.L & LWTYPER == LWTYPEL & !is.na(GEOID.R) & !is.na(GEOID.L) & !is.na(LWTYPER) & !is.na(LWTYPEL), 1, rem.flag)]
+	
 	}
 
 	geom_edges.dt <- geom_edges.dt[rem.flag==0]
@@ -486,13 +510,15 @@ generate_USCB_topojson_file <- function(FIPS_dt, USCB_TIGER.path, geo.year="2020
 
 	###check for invalid geometries###
 	nn <- nrow(geom.dt[!grepl('^POLYGON',WKT.poly)])
+	
+	###uncomment to view illegal geometries###
+	#plot(st_geometry(st_as_sf(geos_read_wkt(geom.dt[!grepl('^POLYGON',WKT.poly)]$WKT.line))))
+	
 	if(nn > 0){
 		stop(paste("\nThere are",nn,"illegal geometries\n"))
 	}
 	
-	###uncomment to view illegal geometries###
-	#plot(st_geometry(st_as_sf(geos_read_wkt(geom.dt[!grepl('^POLYGON',WKT.line)]$out.WKT))))
-
+	
 	###assign unique feature id###
 	geom.dt[,f.id := .I]
 
