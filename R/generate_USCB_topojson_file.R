@@ -113,7 +113,7 @@ sort_edges <- function(pairz, in.dt, f.node, t.node, in_clus=2){
 
 
 generate_USCB_topojson_file <- function(FIPS_dt, USCB_TIGER.path, geo.year="2020", geo.type="tract", omit.unpopulated=TRUE, omit.artifacts=TRUE, output.file_name, in_clus=2) {
-if(as.character(geo.year)=="2010") {
+	if(as.character(geo.year)=="2010") {
 		f_year <- "2019"
 	} else {
 		f_year <- "2022"
@@ -191,6 +191,9 @@ if(as.character(geo.year)=="2010") {
 		return(as.data.table(temp.sf))
 
 	}), use.names=TRUE, fill=TRUE))
+	
+	###convert to WGS1984###
+	in.sf <- st_transform(edges.sf, 4326)
 
 	#TLID: Permanent edge ID
 	#TFIDL: Permanent face ID on the left of the edge
@@ -413,6 +416,7 @@ if(as.character(geo.year)=="2010") {
 	geom_edges.dt[,u.id := .I] 
 
 	geom_edges.dt[,u.id := u.id - 1]
+	
 
 	###############################################
 	###generate graph for each geographic record###
@@ -439,10 +443,6 @@ if(as.character(geo.year)=="2010") {
 	rm(p1.dt,p2.dt)
 
 	p.dt[, pair.id := .GRP, by=.(GEOID)]
-
-	#
-	##
-	###
 
 
 	###deal with self loops###
@@ -502,9 +502,9 @@ if(as.character(geo.year)=="2010") {
 	setorder(p.dt,pair.id,sub.id,sort.id)
 	rm(e.dt)
 
-	#######################################################
-	###create shapefile to check if geometries are valid### 
-	#######################################################
+	##########################################
+	###create geometries and check if valid### 
+	##########################################
 
 	geom.dt <- p.dt[,.(WKT.line = geos_write_wkt(geos_line_merge(paste0("MULTILINESTRING (",paste(gsub("LINESTRING ","",WKT),collapse=", "),")"))), WKT.poly = geos_write_wkt(geos_unary_union(geos_polygonize(paste0("MULTILINESTRING (",paste(gsub("LINESTRING ","",WKT),collapse=", "),")")))), poly.arcs=paste0("[",paste(u.id,collapse=","),"]")), by=list(GEOID,pair.id,sub.id)]
 
@@ -542,68 +542,23 @@ if(as.character(geo.year)=="2010") {
 	multi_poly.dt <- polys.dt[,.(WKT=paste0("MULTIPOLYGON (",paste(gsub("POLYGON ","",WKT.poly),collapse=", "),")"), arcs=paste0("[",paste(out.arcs,collapse=","),"]")), by = GEOID]
 
 	setorder(multi_poly.dt,GEOID)
-	multi_poly.dt[,poly.id := .I]
+	multi_poly.dt[,id := .I]
 
 	###uncomment to preview###
 	#plot(st_geometry(st_as_sf(geos_read_wkt(multi_poly.dt$WKT))), col='gold')
-
-	########################
-	###export as topojson###
-	########################
-
-	###collapse rows into arrays###
-	multi_poly.dt[,str := paste0('{"type":"MultiPolygon","arcs":',arcs,',"properties":{"poly_id":',poly.id,',"GEOID":',GEOID,'}}')]
-
-	###convert WKT string into nested array of coordinates###
-	setorder(geom_edges.dt,u.id)
-	geom_edges.dt[,arcs := gsub(", ","],[",WKT)]
-	geom_edges.dt[,arcs := gsub("LINESTRING \\(","[",arcs)]
-	geom_edges.dt[,arcs := gsub("\\)","]",arcs)]
-	geom_edges.dt[,arcs := gsub(" ",",",arcs)]
-	geom_edges.dt[,arcs := paste0("[",arcs,"]")]
-
-	object_name <- paste0(geo.type,"_",geo.year)
-
-	str.1 <- paste0('{"type":"Topology","objects":{"',object_name,'":{"type":"GeometryCollection","geometries":[')
-
-	str.2 <- paste(multi_poly.dt$str,collapse=',')
-
-	str.3 <- paste0(']}},"arcs":[',paste(geom_edges.dt$arcs,collapse=','),']')
-
-	str.4 <- paste0(',"bbox":[',paste(as.numeric(wk::wk_bbox(geos_read_wkt(geom_edges.dt$WKT))),collapse=','),']}')
-
-	fileConn <- file(output.file_name)
-	writeLines(paste0(str.1,str.2,str.3,str.4), fileConn)
-	close(fileConn)
-
-	################################################
-	###read in as sf and compare to multi_poly.dt###
-	################################################
 	
-	###read in newly generated topojson file as sf object###
-	topo.sf <- topojson_read(output.file_name)
+	out.sf <- copy(multi_poly.dt)
+	out.sf[,geometry := geos_read_wkt(WKT)]
+	out.sf[,c("WKT","arcs"):= NULL]
+	out.sf <- st_as_sf(out.sf)
+	out.sf <- st_set_crs(out.sf,st_crs(edges.sf))
+
+	###generate quantized topojson to reduce file size###
+	topojson_write(input = out.sf, object_name = paste0(geo.type,"_",geo.year), crs = 4326, file=output.file_name, quantization=10000)
+	
+	###uncomment to read in newly generated topojson file as sf object###
+	#topo.sf <- topojson_read(output.file_name)
 	
 	###uncomment to preview###
 	#plot(st_geometry(topo.sf), col='gold')
-
-	topo.sf$WKT <- geos_write_wkt(as_geos_geometry(st_geometry(topo.sf)))
-	topo.dt <- as.data.table(st_drop_geometry(topo.sf))
-	topo.dt[,GEOID := as.character(GEOID)]
-	topo.dt <- merge(topo.dt, multi_poly.dt[,c('GEOID','WKT'), with=FALSE], by='GEOID', all.y=TRUE)
-	
-	fail.dt <- topo.dt[WKT.x != WKT.y]
-	fail.dt[,is.valid := geos_is_valid(WKT.x)]
-	
-	nn <- nrow(fail.dt)
-	n1 <- nrow(fail.dt[(is.valid)])
-	n2 <- nrow(fail.dt[!(is.valid)])
-	
-	###uncomment to preview###
-	#plot(st_geometry(st_as_sf(geos_read_wkt(topo.dt[WKT.x != WKT.y]$WKT.x))), col='gold')
-	
-	if(nn > 0){
-		cat(paste("\nThere were geometry differences found in",nn,"polygons.\nOf these,",n1,"are valid and",n2,"are invalid.\n"))
-	} else{
-		cat("\nTopojson file successfully generated.\n")
-	}
 }
