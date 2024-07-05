@@ -18,7 +18,7 @@ Required packages that must be installed to run this code:
 
 * ```censusapi```: for reading in population data
 
-* ```geojsonio```: for loading generated topojson file for testing
+* ```geojsonio```: for generating quantized topojson files
  
 * ```igraph```: for collapsing directional multipart polylines in edges files into single part polylines
 
