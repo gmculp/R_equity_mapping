@@ -113,6 +113,7 @@ sort_edges <- function(pairz, in.dt, f.node, t.node, in_clus=2){
 
 
 generate_USCB_topojson_file <- function(FIPS_dt, USCB_TIGER.path, geo.year="2020", geo.type="tract", omit.unpopulated=TRUE, omit.artifacts=TRUE, output.file_name, in_clus=2) {
+	
 	if(as.character(geo.year)=="2010") {
 		f_year <- "2019"
 	} else {
@@ -150,6 +151,9 @@ generate_USCB_topojson_file <- function(FIPS_dt, USCB_TIGER.path, geo.year="2020
 		return(as.data.table(temp.sf))
 
 	}), use.names=TRUE, fill=TRUE))
+	
+	#uncomment when debugging#
+	#faces.dt$WKT <- geos_write_wkt(as_geos_geometry(st_geometry(faces.dt)))
 
 	faces.dt <- as.data.table(st_drop_geometry(faces.dt))
 
@@ -211,7 +215,7 @@ generate_USCB_topojson_file <- function(FIPS_dt, USCB_TIGER.path, geo.year="2020
 	temp.dt[,LWTYPE := ifelse(BG=='0','W','L')]
 	temp.dt[,BG := NULL]
 	temp.dt[,USCB_tract := substr(USCB_block,1,11)]
-
+	
 	setnames(temp.dt,names(temp.dt),paste0(names(temp.dt),'L'))
 	edges.sf <- merge(edges.sf, temp.dt, by='TFIDL', all.x=TRUE)
 
@@ -221,6 +225,49 @@ generate_USCB_topojson_file <- function(FIPS_dt, USCB_TIGER.path, geo.year="2020
 
 	edges.sf$WKT <- geos_write_wkt(as_geos_geometry(st_geometry(edges.sf)))
 
+
+	if(omit.coast){
+	
+		#########################################################################
+		###detect waterbodies where BG!=0 connected to waterbodies where BG==0###
+		#########################################################################
+		
+		water.dt <- copy(faces.dt)
+		water.dt[,new.LWTYPE := ifelse(BG=='0','W1',ifelse(LWFLAG=='P','W2','L'))]
+		water.dt <- water.dt[new.LWTYPE != 'L', c('TFID','new.LWTYPE'), with=FALSE]
+		
+		temp.dt <- as.data.table(st_drop_geometry(edges.sf))[!is.na(TFIDL) & !is.na(TFIDR) & TFIDL != TFIDR & (TFIDL %in% water.dt$TFID) & (TFIDR %in% water.dt$TFID),c('TFIDL','TFIDR'), with=FALSE]
+		
+		temp.dt[,TFID1 := pmin(TFIDR,TFIDL,na.rm=TRUE)]
+		temp.dt[,TFID2 := pmax(TFIDR,TFIDL,na.rm=TRUE)]
+
+		temp.dt <- unique(temp.dt[,c('TFID1','TFID2'),with=FALSE])
+		
+		net <- graph_from_data_frame(temp.dt[!is.na(TFID1) & !is.na(TFID2) & TFID1!=TFID2], directed = FALSE)
+		dg <- decompose(net)
+		dg.dt <- rbindlist(lapply(1:length(dg),function(i){
+			data.table(TFID=as.character(names(V(dg[[i]]))),group=i)
+		}))	
+		
+		dg.dt[,is.W1 := ifelse(TFID %in% water.dt[new.LWTYPE=='W1']$TFID,1,0)]
+		dg.dt[,is.W2 := ifelse(TFID %in% water.dt[new.LWTYPE=='W2']$TFID,1,0)]
+		dg.dt[,W1.tot := sum(is.W1), by=group]
+		
+		water.dt <- dg.dt[is.W2==1 & W1.tot > 0]
+		
+		#uncomment when debugging#
+		#plot(st_geometry(st_as_sf(geos_read_wkt(faces.dt[TFID %in% water.dt$TFID]$WKT))), reset=FALSE, col='gold')
+		#plot(st_geometry(st_as_sf(geos_read_wkt(faces.dt[BG=='0']$WKT))), add=TRUE, col='pink')
+		
+		edges.sf$LWTYPER <- ifelse(!is.na(edges.sf$TFIDR) & (edges.sf$TFIDR %in% water.dt$TFID), 'W', edges.sf$LWTYPER)
+		edges.sf$LWTYPEL <- ifelse(!is.na(edges.sf$TFIDL) & (edges.sf$TFIDL %in% water.dt$TFID), 'W', edges.sf$LWTYPEL)
+		
+		edges.sf$USCB_blockR <- ifelse(!is.na(edges.sf$TFIDR) & (edges.sf$TFIDR %in% water.dt$TFID), NA, edges.sf$USCB_blockR)
+		edges.sf$USCB_blockL <- ifelse(!is.na(edges.sf$TFIDL) & (edges.sf$TFIDL %in% water.dt$TFID), NA, edges.sf$USCB_blockL)
+		
+		rm(temp.dt,net,dg,dg.dt,water.dt)
+	}
+	
 	edges.sf$rem.flag <- ifelse(!is.na(edges.sf$USCB_blockL) & !is.na(edges.sf$USCB_blockR) & (edges.sf$USCB_blockL==edges.sf$USCB_blockR), 1, 0)
 
 	###remove edges where both faces are water###
@@ -317,11 +364,14 @@ generate_USCB_topojson_file <- function(FIPS_dt, USCB_TIGER.path, geo.year="2020
 
 	art.dt <- art.dt[,.(tot=.N), by=.(USCB_block,LWTYPE,cty)]
 	art.dt <- dcast(art.dt, USCB_block + cty ~ LWTYPE, value.var = "tot")
-
-	art.dt <- merge(art.dt[substr(USCB_block,1,5) != cty & is.na(W) & !is.na(L)], art.dt[substr(USCB_block,1,5) == cty & !is.na(W) & is.na(L)], by="USCB_block")
-
 	rm(temp.dt)
-
+	
+	
+	if("W" %in% names(art.dt)){
+		art.dt <- merge(art.dt[substr(USCB_block,1,5) != cty & is.na(W) & !is.na(L)], art.dt[substr(USCB_block,1,5) == cty & !is.na(W) & is.na(L)], by="USCB_block")
+	} else {
+		omit.artifacts <- FALSE
+	}
 
 
 	#########################################################
@@ -367,11 +417,14 @@ generate_USCB_topojson_file <- function(FIPS_dt, USCB_TIGER.path, geo.year="2020
 		###reset artifact edges###
 		geom_edges.dt[,GEOID.R := ifelse(new.edge == 'R', NA, GEOID.R)]
 		geom_edges.dt[,GEOID.L := ifelse(new.edge == 'L', NA, GEOID.L)]
-		
+	
 		###remove interior edges but not adjacent to artifacts###
 		geom_edges.dt[,rem.flag := ifelse(GEOID.R == GEOID.L & LWTYPER == LWTYPEL & !is.na(GEOID.R) & !is.na(GEOID.L) & !is.na(LWTYPER) & !is.na(LWTYPEL) & (new.edge=='N'), 1, rem.flag)]
 		
 		geom_edges.dt[,new.edge := NULL]
+		
+		geom_edges.dt[,GEOID.R := ifelse(!is.na(USCB_blockR) & USCB_blockR %in% art.dt$USCB_block,NA,GEOID.R)]
+		geom_edges.dt[,GEOID.L := ifelse(!is.na(USCB_blockL) & USCB_blockL %in% art.dt$USCB_block,NA,GEOID.L)]
 	
 	} else{
 		
@@ -379,12 +432,11 @@ generate_USCB_topojson_file <- function(FIPS_dt, USCB_TIGER.path, geo.year="2020
 		geom_edges.dt[,rem.flag := ifelse(GEOID.R == GEOID.L & LWTYPER == LWTYPEL & !is.na(GEOID.R) & !is.na(GEOID.L) & !is.na(LWTYPER) & !is.na(LWTYPEL), 1, rem.flag)]
 	
 	}
-
+	
+	
 	geom_edges.dt <- geom_edges.dt[rem.flag==0]
-	geom_edges.dt[,rem.flag := NULL]
+	geom_edges.dt[,c('rem.flag') := NULL]
 
-	geom_edges.dt[,GEOID.R := ifelse(!is.na(USCB_blockR) & USCB_blockR %in% art.dt$USCB_block,NA,GEOID.R)]
-	geom_edges.dt[,GEOID.L := ifelse(!is.na(USCB_blockL) & USCB_blockL %in% art.dt$USCB_block,NA,GEOID.L)]
 
 	###
 
@@ -552,13 +604,13 @@ generate_USCB_topojson_file <- function(FIPS_dt, USCB_TIGER.path, geo.year="2020
 	out.sf[,c("WKT","arcs"):= NULL]
 	out.sf <- st_as_sf(out.sf)
 	out.sf <- st_set_crs(out.sf,st_crs(edges.sf))
-
-	###generate quantized topojson to reduce file size###
+	
 	topojson_write(input = out.sf, object_name = paste0(geo.type,"_",geo.year), crs = 4326, file=output.file_name, quantization=10000)
 	
-	###uncomment to read in newly generated topojson file as sf object###
-	#topo.sf <- topojson_read(output.file_name)
+	###read in newly generated topojson file as sf object###
+	topo.sf <- topojson_read(output.file_name)
 	
 	###uncomment to preview###
 	#plot(st_geometry(topo.sf), col='gold')
+
 }
