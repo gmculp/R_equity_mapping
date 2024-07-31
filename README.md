@@ -37,7 +37,7 @@ USCB_TIGER.path <- "C:/Leaflet_resources/census_files"
 output.path <- "C:/leaflet_resources/topojson_files"
 
 ###specify data table containing state and county FIPS codes###
-FIPS_dt <- data.table(state=rep("06",9),county=c("001","055","085","013","075","095","041","081","097"))
+FIPS.dt <- data.table(state=rep("06",9),county=c("001","055","085","013","075","095","041","081","097"))
 
 ###automatically download all necessary files from USCB TIGER website###
 ###you will only have to do this once for each decennial census year###
